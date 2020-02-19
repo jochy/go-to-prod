@@ -1,64 +1,26 @@
 name: Deploy PASS
 desc: All states of the production during a deployment
+version: 1.0
 states:
   - name: Before delivery
     desc: The state before the delivery
     components:
-      - name: Elastic
-        image: elasticsearch:6.6.1
-        container-name: elasticsearch
-        environment:
-          - discovery.type=single-node
-
-      - name: Redis
-        image: redis/redis40:latest
-        container-name: redis
-
-      - name: Pass-simulator
-        image: pass/pass-simulator:1.9.0
-        container-name: pass-simulator
-        depends-on:
-          - redis
-          - elacticsearch
-
-      - name: Pass-server
-        image: pass/pass-server:1.9.0
-        container-name: pass-server
-        depends-on:
-          - pass-simulator
+      - name: server
+        image: server
 
     checks:
-      - name: PASS Smoke tests
-        desc: Smoke tests for the PASS-Server
-        image: pass/pass-test:1.9.0
+      - name: Run tests
+        desc: The tests
+        image: test
 
   - name: After delivery
     desc: The state after the delivery
     components:
-      - name: Elastic
-        image: elasticsearch:6.6.1
-        container-name: elasticsearch
-        environment:
-          - discovery.type=single-node
-
-      - name: Redis
-        image: redis/redis40:latest
-        container-name: redis
-
-      - name: Pass-simulator
-        image: pass/pass-simulator:1.10.0
-        container-name: pass-simulator
-        depends-on:
-          - redis
-          - elacticsearch
-
-      - name: Pass-server
-        image: pass/pass-server:1.10.0
-        container-name: pass-server
-        depends-on:
-          - pass-simulator
+      - name: Server
+        image: server
+        container-name: server
 
     checks:
-      - name: PASS Smoke tests
-        desc: Smoke tests for the PASS-Server
-        image: pass/pass-test:1.10.0
+      - name: Run tests
+        desc: The tests
+        image: test
