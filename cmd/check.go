@@ -25,15 +25,29 @@ import (
 	"log"
 )
 
+var pipeline Pipeline
+
 // checkCmd represents the check command
 var checkCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Test all your steps during a deployment",
 	Long:  `This will play all checks described inside deployment steps and will print the result`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if err := ui.Init(); err != nil {
+			log.Fatalf("failed to initialize termui: %v", err)
+		}
+		defer ui.Close()
+
 		file, _ := cmd.Flags().GetString("file")
-		pipeline := readDescriptor(file)
-		defer display()
+		pipeline = readDescriptor(file)
+
+		display()
+
+		for e := range ui.PollEvents() {
+			if e.Type == ui.KeyboardEvent {
+				break
+			}
+		}
 		fmt.Printf("%s",pipeline)
 	},
 }
@@ -58,22 +72,19 @@ func readDescriptor(filename string) Pipeline {
 }
 
 func display() {
-	if err := ui.Init(); err != nil {
-		log.Fatalf("failed to initialize termui: %v", err)
-	}
-	defer ui.Close()
-
 	p := widgets.NewParagraph()
 	p.Text = "Hello World!"
 	p.SetRect(0, 0, 25, 5)
+	grid := ui.NewGrid()
+	termWidth, termHeight := ui.TerminalDimensions()
+	grid.SetRect(0, 0, termWidth, termHeight)
+	grid.Set(
+		ui.NewRow(1.0/2,
+			ui.NewCol(1.0/2, p),
+		),
+	)
 
-	ui.Render(p)
-
-	for e := range ui.PollEvents() {
-		if e.Type == ui.KeyboardEvent {
-			break
-		}
-	}
+	ui.Render(grid)
 }
 
 type Pipeline struct {
