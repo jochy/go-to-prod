@@ -15,17 +15,26 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
+	"strings"
+	"time"
 )
 
 var pipeline Pipeline
+var stateTable *widgets.Table
+var grid *ui.Grid
+var docker *client.Client
 
 // checkCmd represents the check command
 var checkCmd = &cobra.Command{
@@ -36,19 +45,35 @@ var checkCmd = &cobra.Command{
 		if err := ui.Init(); err != nil {
 			log.Fatalf("failed to initialize termui: %v", err)
 		}
+		cli, err := client.NewEnvClient()
+		if err != nil {
+			fmt.Println("Unable to create docker client")
+			panic(err)
+		}
+		docker = cli
+		docker.NegotiateAPIVersion(context.Background())
+
 		defer ui.Close()
 
 		file, _ := cmd.Flags().GetString("file")
 		pipeline = readDescriptor(file)
 
-		display()
+		go processPipeline()
 
-		for e := range ui.PollEvents() {
-			if e.Type == ui.KeyboardEvent {
-				break
+		display()
+		uiEvents := ui.PollEvents()
+		ticker := time.NewTicker(time.Second).C
+		for {
+			select {
+			case e := <-uiEvents:
+				switch e.ID {
+				case "q", "<C-c>":
+					return
+				}
+			case <-ticker:
+				display()
 			}
 		}
-		fmt.Printf("%s",pipeline)
 	},
 }
 
@@ -71,38 +96,99 @@ func readDescriptor(filename string) Pipeline {
 	return config
 }
 
+func processPipeline() {
+	for index, _ := range pipeline.States {
+		processState(&pipeline.States[index])
+	}
+}
+
+func processState(state *State) {
+	uid, _ := uuid.NewRandom()
+	id := strings.ReplaceAll(uid.String(), "-", "")
+	start := time.Now()
+	state.start = &start
+
+	// Create network
+	network, err := docker.NetworkCreate(context.Background(), "g2p_"+id, types.NetworkCreate{})
+
+	if err != nil {
+		panic(err)
+	}
+
+	err = docker.NetworkRemove(context.Background(), network.ID)
+	if err != nil {
+		panic(err)
+	}
+
+	end := time.Now()
+	state.end = &end
+}
+
 func display() {
-	p := widgets.NewParagraph()
-	p.Text = "Hello World!"
-	p.SetRect(0, 0, 25, 5)
-	grid := ui.NewGrid()
+	if stateTable == nil {
+		stateTable = widgets.NewTable()
+	}
+	stateTable.Title = "Running pipeline state check for " + pipeline.Name
+	stateTable.Rows = [][]string{}
+	for index, _ := range pipeline.States {
+		tmp := [][]string{printState(&pipeline.States[index])}
+		stateTable.Rows = append(stateTable.Rows, tmp...)
+	}
+
+	if grid == nil {
+		grid = ui.NewGrid()
+	}
 	termWidth, termHeight := ui.TerminalDimensions()
 	grid.SetRect(0, 0, termWidth, termHeight)
 	grid.Set(
-		ui.NewRow(1.0/2,
-			ui.NewCol(1.0/2, p),
+		ui.NewRow(1.0,
+			ui.NewCol(1.0, stateTable),
 		),
 	)
 
 	ui.Render(grid)
 }
 
+func printState(state *State) []string {
+	status := "Pending"
+	taken := ""
+
+	if state.start != nil && state.end != nil && state.valid {
+		status = "Valid"
+	}
+	if state.start != nil && state.end != nil && state.valid {
+		status = "Failed"
+	}
+	if state.start != nil {
+		state.tick = state.tick + 1
+		status = "Running" + strings.Repeat(".", state.tick%4)
+		taken = time.Now().Sub(*state.start).Round(time.Millisecond).String()
+	}
+	return []string{state.Name, taken, status}
+}
+
 type Pipeline struct {
-	Name string
-	Desc string
+	Name    string
+	Desc    string
 	Version string
-	States []State
+	States  []State
 }
 
 type State struct {
-	Name string
-	Desc string
+	Name       string
+	Desc       string
 	Components []Container
-	Checks []Container
+	Checks     []Container
+
+	// Private
+	valid bool
+	start *time.Time
+	end   *time.Time
+	tick  int
 }
 
 type Container struct {
-	Name          string
-	Image         string
-	Environment   map[string]string
+	Name        string
+	Image       string
+	Environment map[string]string
 }
