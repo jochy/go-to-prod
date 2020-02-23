@@ -11,7 +11,12 @@ states:
         desc: The tests
         image: test
         env:
-          CYPRESS_BASE_URL: "http://server:8080"
+          - "CYPRESS_BASE_URL=http://server:8080"
+      - name: Second test
+        desc: The tests
+        image: test
+        env:
+          - "CYPRESS_BASE_URL=http://server:8080"
 
   - name: After delivery
     desc: The state after the delivery
@@ -22,4 +27,4 @@ states:
         desc: The tests
         image: test
         env:
-          CYPRESS_BASE_URL: "http://server:8081"
+          - "CYPRESS_BASE_URL=http://server:8081"

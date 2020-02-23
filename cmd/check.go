@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	g2p "go-to-prod/internal"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
@@ -33,7 +34,7 @@ import (
 	"time"
 )
 
-var pipeline Pipeline
+var pipeline g2p.Pipeline
 var stateTable *widgets.Table
 var grid *ui.Grid
 var docker *client.Client
@@ -85,8 +86,8 @@ func init() {
 	_ = cobra.MarkFlagRequired(checkCmd.Flags(), "file")
 }
 
-func readDescriptor(filename string) Pipeline {
-	var config Pipeline
+func readDescriptor(filename string) g2p.Pipeline {
+	var config g2p.Pipeline
 	source, err := ioutil.ReadFile(filename)
 	if err != nil {
 		panic(err)
@@ -104,13 +105,12 @@ func processPipeline() {
 	}
 }
 
-func processState(state *State) {
+func processState(state *g2p.State) {
 	uid, _ := uuid.NewRandom()
 	id := "g2p_" + strings.ReplaceAll(uid.String(), "-", "")
-	start := time.Now()
-	state.start = &start
+	state.Start()
 
-	state.operation = "Deploying"
+	state.Operation = "Deploying"
 	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "up", "-d")
 	err := cmd.Run()
 	if err != nil {
@@ -118,8 +118,60 @@ func processState(state *State) {
 		panic(err)
 	}
 
-	state.operation = "Running tests"
+	state.Operation = "Running tests"
+	network := findNetwork(err, id)
+	// Fixme : try to do better thant this
+	time.Sleep(10 * time.Second)
 
+	for checkerIndex, _ := range state.Checks {
+		checker := &state.Checks[checkerIndex]
+		checker.Start()
+		runChecker(checker, network, id, state)
+		checker.Stop()
+	}
+
+	state.Operation = "Undeploying"
+	if stopState(state, id) != nil {
+		panic("Unable to stop compose")
+	}
+
+	state.Stop()
+}
+
+func runChecker(checker *g2p.Checker, network types.NetworkResource, id string, state *g2p.State) {
+	cont, err := docker.ContainerCreate(context.Background(),
+		&container.Config{
+			Env:   checker.Env,
+			Image: checker.Image,
+		},
+		&container.HostConfig{
+			NetworkMode: container.NetworkMode(network.Name),
+		},
+		nil,
+		id+"_"+strings.ReplaceAll(checker.Name, " ", "_")+"_0")
+	if err != nil {
+		_ = stopState(state, id)
+		panic(err)
+	}
+	err = docker.ContainerStart(context.Background(), cont.ID, types.ContainerStartOptions{})
+	if err != nil {
+		_ = stopState(state, id)
+		panic(err)
+	}
+	statusCh, errCh := docker.ContainerWait(context.Background(), cont.ID, container.WaitConditionNextExit)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			_ = stopState(state, id)
+			panic(err)
+		}
+	case status := <-statusCh:
+		checker.ExitCode = status.StatusCode
+	}
+	_ = docker.ContainerRemove(context.Background(), cont.ID, types.ContainerRemoveOptions{})
+}
+
+func findNetwork(err error, id string) types.NetworkResource {
 	var network types.NetworkResource
 	networks, err := docker.NetworkList(context.Background(), types.NetworkListOptions{})
 	for _, net := range networks {
@@ -128,57 +180,10 @@ func processState(state *State) {
 			break
 		}
 	}
-	time.Sleep(10 * time.Second)
-
-	for checkerIndex, _ := range state.Checks {
-		checker := &state.Checks[checkerIndex]
-		cont, err := docker.ContainerCreate(context.Background(),
-			&container.Config{
-				Env:   nil,
-				Image: checker.Image,
-			},
-			&container.HostConfig{
-				NetworkMode: container.NetworkMode(network.Name),
-			},
-			nil,
-			id+"_"+checker.Name+"_0")
-
-		if err != nil {
-			_ = stopState(state, id)
-			panic(err)
-		}
-
-		err = docker.ContainerStart(context.Background(), cont.ID, types.ContainerStartOptions{})
-		if err != nil {
-			_ = stopState(state, id)
-			panic(err)
-		}
-
-		statusCh, errCh := docker.ContainerWait(context.Background(), cont.ID, container.WaitConditionNextExit)
-		select {
-		case err := <-errCh:
-			if err != nil {
-				_ = stopState(state, id)
-				panic(err)
-			}
-		case status := <-statusCh:
-			state.valid = status.StatusCode == 0
-			checker.exitCode = status.StatusCode
-		}
-
-		_ = docker.ContainerRemove(context.Background(), cont.ID, types.ContainerRemoveOptions{})
-	}
-
-	state.operation = "Undeploying"
-	if stopState(state, id) != nil {
-		panic("Unable to stop compose")
-	}
-
-	end := time.Now()
-	state.end = &end
+	return network
 }
 
-func stopState(state *State, id string) error {
+func stopState(state *g2p.State, id string) error {
 	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "down")
 	err := cmd.Run()
 	return err
@@ -192,6 +197,9 @@ func display() {
 	stateTable.Rows = [][]string{}
 	for index, _ := range pipeline.States {
 		tmp := [][]string{printState(&pipeline.States[index])}
+		for idx, _ := range pipeline.States[index].Checks {
+			tmp = append(tmp, printCheckers(&pipeline.States[index].Checks[idx]))
+		}
 		stateTable.Rows = append(stateTable.Rows, tmp...)
 	}
 
@@ -209,50 +217,10 @@ func display() {
 	ui.Render(grid)
 }
 
-func printState(state *State) []string {
-	status := "Pending"
-	taken := ""
-
-	if state.start != nil && state.end != nil && state.valid {
-		status = "Valid"
-		taken = state.end.Sub(*state.start).Round(time.Millisecond).String()
-	} else if state.start != nil && state.end != nil && !state.valid {
-		status = "Failed"
-		taken = state.end.Sub(*state.start).Round(time.Millisecond).String()
-	} else if state.start != nil {
-		state.tick = state.tick + 1
-		status = state.operation + " " + strings.Repeat(".", state.tick%4)
-		taken = time.Now().Sub(*state.start).Round(time.Millisecond).String()
-	}
-	return []string{state.Name, taken, status}
+func printState(state *g2p.State) []string {
+	return []string{state.Name, state.ElapsedPrettyPrint(), state.Status(state.IsValid())}
 }
 
-type Pipeline struct {
-	Name    string
-	Desc    string
-	Version string
-	States  []State
-}
-
-type State struct {
-	Name        string
-	Desc        string
-	ComposeFile string `yaml:"compose-file"`
-	Checks      []Container
-
-	// Internal
-	valid     bool
-	start     *time.Time
-	end       *time.Time
-	tick      int
-	operation string
-}
-
-type Container struct {
-	Name        string
-	Image       string
-	Environment map[string]string
-
-	// Internal
-	exitCode int64
+func printCheckers(checker *g2p.Checker) []string {
+	return []string{"     " + checker.Name, checker.ElapsedPrettyPrint(), checker.Status(checker.IsValid())}
 }
