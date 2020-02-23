@@ -1,6 +1,7 @@
 package internal
 
 import (
+	ui "github.com/gizak/termui/v3"
 	"strings"
 	"time"
 )
@@ -38,10 +39,6 @@ type Loggable struct {
 	Operation string
 }
 
-type Valid interface {
-	IsValid() bool
-}
-
 func (loggable *Loggable) Start() {
 	start := time.Now()
 	loggable.start = &start
@@ -62,9 +59,9 @@ func (loggable *Loggable) IsStarted() bool {
 
 func (loggable *Loggable) ElapsedPrettyPrint() string {
 	if loggable.end != nil {
-		return loggable.end.Sub(*loggable.start).Round(time.Millisecond).String()
+		return " " + loggable.end.Sub(*loggable.start).Round(time.Millisecond).String()
 	} else if loggable.start != nil {
-		return time.Now().Sub(*loggable.start).Round(time.Millisecond).String()
+		return " " + time.Now().Sub(*loggable.start).Round(time.Millisecond).String()
 	}
 	return ""
 }
@@ -87,19 +84,30 @@ func (state *State) IsValid() bool {
 }
 
 func (loggable *Loggable) Status(valid bool) string {
-	status := "Pending"
-	ope := "Running"
+	status := " Pending"
+	ope := " Running"
 
 	if loggable.Operation != "" {
 		ope = loggable.Operation
 	}
 
 	if loggable.IsDone() && valid {
-		status = "Valid"
+		status = " ✔ Valid"
 	} else if loggable.IsDone() && !valid {
-		status = "Failed"
+		status = " ✖ Failed"
 	} else if loggable.IsStarted() {
 		status = ope + " " + strings.Repeat(".", loggable.Tick()%4)
 	}
 	return status
+}
+
+func (loggable *Loggable) Color(isValid bool) ui.Color {
+	if loggable.IsDone() && isValid {
+		return ui.ColorGreen
+	} else if loggable.IsDone() && !isValid {
+		return ui.ColorRed
+	} else if loggable.IsStarted() {
+		return ui.ColorYellow
+	}
+	return ui.ColorClear
 }

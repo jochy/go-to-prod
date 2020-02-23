@@ -1,4 +1,4 @@
-name: Deploy PASS
+name: Deploying new version
 desc: All states of the production during a deployment
 version: 1.0
 states:

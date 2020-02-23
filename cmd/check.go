@@ -110,7 +110,7 @@ func processState(state *g2p.State) {
 	id := "g2p_" + strings.ReplaceAll(uid.String(), "-", "")
 	state.Start()
 
-	state.Operation = "Deploying"
+	state.Operation = " Deploying"
 	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "up", "-d")
 	err := cmd.Run()
 	if err != nil {
@@ -118,7 +118,7 @@ func processState(state *g2p.State) {
 		panic(err)
 	}
 
-	state.Operation = "Running tests"
+	state.Operation = " Running tests"
 	network := findNetwork(err, id)
 	// Fixme : try to do better thant this
 	time.Sleep(10 * time.Second)
@@ -130,7 +130,7 @@ func processState(state *g2p.State) {
 		checker.Stop()
 	}
 
-	state.Operation = "Undeploying"
+	state.Operation = " Undeploying"
 	if stopState(state, id) != nil {
 		panic("Unable to stop compose")
 	}
@@ -193,14 +193,27 @@ func display() {
 	if stateTable == nil {
 		stateTable = widgets.NewTable()
 	}
-	stateTable.Title = "Running pipeline state check for " + pipeline.Name
+	stateTable.Title = "Running checks for " + pipeline.Name
 	stateTable.Rows = [][]string{}
+	stateTable.RowSeparator = false
+	stateTable.PaddingLeft = 1
 	for index, _ := range pipeline.States {
 		tmp := [][]string{printState(&pipeline.States[index])}
 		for idx, _ := range pipeline.States[index].Checks {
 			tmp = append(tmp, printCheckers(&pipeline.States[index].Checks[idx]))
 		}
 		stateTable.Rows = append(stateTable.Rows, tmp...)
+	}
+
+	// Color
+	var index = 0
+	for _, stateElement := range pipeline.States {
+		stateTable.RowStyles[index] = ui.NewStyle(stateElement.Color(stateElement.IsValid()))
+		index++
+		for _, checkerElement := range stateElement.Checks {
+			stateTable.RowStyles[index] = ui.NewStyle(checkerElement.Color(checkerElement.IsValid()))
+			index++
+		}
 	}
 
 	if grid == nil {
@@ -222,5 +235,9 @@ func printState(state *g2p.State) []string {
 }
 
 func printCheckers(checker *g2p.Checker) []string {
-	return []string{"     " + checker.Name, checker.ElapsedPrettyPrint(), checker.Status(checker.IsValid())}
+	var statusPrecision = ""
+	if !checker.IsValid() {
+		statusPrecision = " (exit code = " + fmt.Sprintf("%v", checker.ExitCode) + ")"
+	}
+	return []string{"  |---" + checker.Name, checker.ElapsedPrettyPrint(), checker.Status(checker.IsValid()) + statusPrecision}
 }
