@@ -1,0 +1,30 @@
+name: Deploying new version
+desc: All states of the production during a deployment
+version: 1.0
+states:
+  - name: Before delivery
+    desc: The state before the delivery
+    compose-file: before.yml
+
+    checks:
+      - name: before
+        desc: The tests
+        image: test
+        env:
+          - "CYPRESS_BASE_URL=http://server:8080"
+      - name: Second test
+        desc: The tests
+        image: test
+        env:
+          - "CYPRESS_BASE_URL=http://server:8080"
+
+  - name: After delivery
+    desc: The state after the delivery
+    compose-file: after.yml
+
+    checks:
+      - name: after
+        desc: The tests
+        image: test
+        env:
+          - "CYPRESS_BASE_URL=http://server:8081"
