@@ -4,23 +4,22 @@ version: 1.0
 states:
   - name: Before delivery
     desc: The state before the delivery
-    components:
-      - name: server
-        image: server
+    compose-file: before.yml
 
     checks:
-      - name: Run tests
+      - name: before
         desc: The tests
         image: test
+        env:
+          CYPRESS_BASE_URL: "http://server:8080"
 
   - name: After delivery
     desc: The state after the delivery
-    components:
-      - name: Server
-        image: server
-        container-name: server
+    compose-file: after.yml
 
     checks:
-      - name: Run tests
+      - name: after
         desc: The tests
         image: test
+        env:
+          CYPRESS_BASE_URL: "http://server:8081"

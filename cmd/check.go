@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
@@ -27,6 +28,7 @@ import (
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -104,24 +106,82 @@ func processPipeline() {
 
 func processState(state *State) {
 	uid, _ := uuid.NewRandom()
-	id := strings.ReplaceAll(uid.String(), "-", "")
+	id := "g2p_" + strings.ReplaceAll(uid.String(), "-", "")
 	start := time.Now()
 	state.start = &start
 
-	// Create network
-	network, err := docker.NetworkCreate(context.Background(), "g2p_"+id, types.NetworkCreate{})
-
+	state.operation = "Deploying"
+	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "up", "-d")
+	err := cmd.Run()
 	if err != nil {
+		_ = stopState(state, id)
 		panic(err)
 	}
 
-	err = docker.NetworkRemove(context.Background(), network.ID)
-	if err != nil {
-		panic(err)
+	state.operation = "Running tests"
+
+	var network types.NetworkResource
+	networks, err := docker.NetworkList(context.Background(), types.NetworkListOptions{})
+	for _, net := range networks {
+		if strings.Contains(net.Name, id) {
+			network = net
+			break
+		}
+	}
+	time.Sleep(10 * time.Second)
+
+	for checkerIndex, _ := range state.Checks {
+		checker := &state.Checks[checkerIndex]
+		cont, err := docker.ContainerCreate(context.Background(),
+			&container.Config{
+				Env:   nil,
+				Image: checker.Image,
+			},
+			&container.HostConfig{
+				NetworkMode: container.NetworkMode(network.Name),
+			},
+			nil,
+			id+"_"+checker.Name+"_0")
+
+		if err != nil {
+			_ = stopState(state, id)
+			panic(err)
+		}
+
+		err = docker.ContainerStart(context.Background(), cont.ID, types.ContainerStartOptions{})
+		if err != nil {
+			_ = stopState(state, id)
+			panic(err)
+		}
+
+		statusCh, errCh := docker.ContainerWait(context.Background(), cont.ID, container.WaitConditionNextExit)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				_ = stopState(state, id)
+				panic(err)
+			}
+		case status := <-statusCh:
+			state.valid = status.StatusCode == 0
+			checker.exitCode = status.StatusCode
+		}
+
+		_ = docker.ContainerRemove(context.Background(), cont.ID, types.ContainerRemoveOptions{})
+	}
+
+	state.operation = "Undeploying"
+	if stopState(state, id) != nil {
+		panic("Unable to stop compose")
 	}
 
 	end := time.Now()
 	state.end = &end
+}
+
+func stopState(state *State, id string) error {
+	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "down")
+	err := cmd.Run()
+	return err
 }
 
 func display() {
@@ -155,13 +215,13 @@ func printState(state *State) []string {
 
 	if state.start != nil && state.end != nil && state.valid {
 		status = "Valid"
-	}
-	if state.start != nil && state.end != nil && state.valid {
+		taken = state.end.Sub(*state.start).Round(time.Millisecond).String()
+	} else if state.start != nil && state.end != nil && !state.valid {
 		status = "Failed"
-	}
-	if state.start != nil {
+		taken = state.end.Sub(*state.start).Round(time.Millisecond).String()
+	} else if state.start != nil {
 		state.tick = state.tick + 1
-		status = "Running" + strings.Repeat(".", state.tick%4)
+		status = state.operation + " " + strings.Repeat(".", state.tick%4)
 		taken = time.Now().Sub(*state.start).Round(time.Millisecond).String()
 	}
 	return []string{state.Name, taken, status}
@@ -175,20 +235,24 @@ type Pipeline struct {
 }
 
 type State struct {
-	Name       string
-	Desc       string
-	Components []Container
-	Checks     []Container
+	Name        string
+	Desc        string
+	ComposeFile string `yaml:"compose-file"`
+	Checks      []Container
 
-	// Private
-	valid bool
-	start *time.Time
-	end   *time.Time
-	tick  int
+	// Internal
+	valid     bool
+	start     *time.Time
+	end       *time.Time
+	tick      int
+	operation string
 }
 
 type Container struct {
 	Name        string
 	Image       string
 	Environment map[string]string
+
+	// Internal
+	exitCode int64
 }
