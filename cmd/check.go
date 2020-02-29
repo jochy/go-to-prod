@@ -36,7 +36,6 @@ import (
 var pipeline g2p.Pipeline
 var docker *client.Client
 var isDebug = false
-var firstDisplay = true
 
 // checkCmd represents the check command
 var checkCmd = &cobra.Command{
@@ -55,11 +54,12 @@ var checkCmd = &cobra.Command{
 		isDebug, _ = cmd.Flags().GetBool("debug")
 		file, _ := cmd.Flags().GetString("file")
 		pipeline = readDescriptor(file)
+		g2p.SetPipeline(pipeline)
 
 		go processPipeline()
 
 		for true {
-			updateSummary()
+			g2p.UpdateSummary()
 			time.Sleep(1 * time.Second)
 		}
 	},
@@ -89,6 +89,7 @@ func processPipeline() {
 	for index, _ := range pipeline.States {
 		processState(&pipeline.States[index])
 	}
+	g2p.UpdateSummary()
 	for _, state := range pipeline.States {
 		if !state.IsValid() {
 			os.Exit(1)
@@ -170,7 +171,7 @@ func runChecker(checker *g2p.Checker, network types.NetworkResource, id string, 
 		buf := new(bytes.Buffer)
 		_, _ = buf.ReadFrom(logs)
 
-		logMessage(buf.String())
+		g2p.LogMessage(buf.String())
 		_ = logs.Close()
 	}
 
@@ -193,54 +194,4 @@ func stopState(state *g2p.State, id string) error {
 	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "down")
 	err := cmd.Run()
 	return err
-}
-
-func logMessage(msg string) {
-	removeSummary()
-	fmt.Printf("\033[0m%v\r\n", msg)
-	displaySummary()
-}
-
-func removeSummary() {
-	count := 0
-	for _, state := range pipeline.States {
-		count += len(state.Checks) + 1
-	}
-	for count >= 0 {
-		fmt.Printf("\033[F\033[K")
-		count--
-	}
-}
-
-func displaySummary() {
-	fmt.Printf("=======================================================\r\n")
-	for index, _ := range pipeline.States {
-		renderData := printState(&pipeline.States[index])
-		fmt.Printf("%v %v \t[%v] \t(%v)\r\n", renderData[3], renderData[0], renderData[2], renderData[1])
-
-		for idx, _ := range pipeline.States[index].Checks {
-			renderData = printCheckers(&pipeline.States[index].Checks[idx])
-			fmt.Printf("%v   -- %v \t[%v] \t(%v)\r\n", renderData[3], renderData[0], renderData[2], renderData[1])
-		}
-	}
-}
-
-func updateSummary() {
-	if !firstDisplay {
-		removeSummary()
-	}
-	displaySummary()
-	firstDisplay = false
-}
-
-func printState(state *g2p.State) []string {
-	return []string{state.Name, state.ElapsedPrettyPrint(), state.Status(state.IsValid()), state.Color(state.IsValid())}
-}
-
-func printCheckers(checker *g2p.Checker) []string {
-	var statusPrecision = ""
-	if !checker.IsValid() {
-		statusPrecision = " (exit code = " + fmt.Sprintf("%v", checker.ExitCode) + ")"
-	}
-	return []string{checker.Name, checker.ElapsedPrettyPrint(), checker.Status(checker.IsValid()) + statusPrecision, checker.Color(checker.IsValid())}
 }
