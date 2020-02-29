@@ -1,8 +1,6 @@
 package internal
 
 import (
-	ui "github.com/gizak/termui/v3"
-	"strings"
 	"time"
 )
 
@@ -35,7 +33,6 @@ type Checker struct {
 type Loggable struct {
 	start     *time.Time
 	end       *time.Time
-	tick      int
 	Operation string
 }
 
@@ -59,16 +56,11 @@ func (loggable *Loggable) IsStarted() bool {
 
 func (loggable *Loggable) ElapsedPrettyPrint() string {
 	if loggable.end != nil {
-		return " " + loggable.end.Sub(*loggable.start).Round(time.Millisecond).String()
+		return loggable.end.Sub(*loggable.start).Round(time.Millisecond).String()
 	} else if loggable.start != nil {
-		return " " + time.Now().Sub(*loggable.start).Round(time.Millisecond).String()
+		return time.Now().Sub(*loggable.start).Round(time.Millisecond).String()
 	}
 	return ""
-}
-
-func (loggable *Loggable) Tick() int {
-	loggable.tick++
-	return loggable.tick
 }
 
 func (checker *Checker) IsValid() bool {
@@ -84,30 +76,30 @@ func (state *State) IsValid() bool {
 }
 
 func (loggable *Loggable) Status(valid bool) string {
-	status := " Pending"
-	ope := " Running"
+	status := "Pending"
+	ope := "Running"
 
 	if loggable.Operation != "" {
 		ope = loggable.Operation
 	}
 
 	if loggable.IsDone() && valid {
-		status = " ✔ Valid"
+		status = "✔ Valid"
 	} else if loggable.IsDone() && !valid {
-		status = " ✖ Failed"
+		status = "✖ Failed"
 	} else if loggable.IsStarted() {
-		status = ope + " " + strings.Repeat(".", loggable.Tick()%4)
+		status = ope
 	}
 	return status
 }
 
-func (loggable *Loggable) Color(isValid bool) ui.Color {
+func (loggable *Loggable) Color(isValid bool) string {
 	if loggable.IsDone() && isValid {
-		return ui.ColorGreen
+		return "\033[32m"
 	} else if loggable.IsDone() && !isValid {
-		return ui.ColorRed
+		return "\033[31m"
 	} else if loggable.IsStarted() {
-		return ui.ColorYellow
+		return "\033[93m"
 	}
-	return ui.ColorClear
+	return "\033[0m"
 }

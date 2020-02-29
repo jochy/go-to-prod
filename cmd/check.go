@@ -15,29 +15,28 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
-	ui "github.com/gizak/termui/v3"
-	"github.com/gizak/termui/v3/widgets"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	g2p "go-to-prod/internal"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
-	"log"
 	"os/exec"
 	"strings"
 	"time"
 )
 
 var pipeline g2p.Pipeline
-var stateTable *widgets.Table
-var grid *ui.Grid
 var docker *client.Client
+var isDebug = false
+var over = false
+var firstDisplay = true
 
 // checkCmd represents the check command
 var checkCmd = &cobra.Command{
@@ -45,9 +44,6 @@ var checkCmd = &cobra.Command{
 	Short: "Test all your steps during a deployment",
 	Long:  `This will play all checks described inside deployment steps and will print the result`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := ui.Init(); err != nil {
-			log.Fatalf("failed to initialize termui: %v", err)
-		}
 		cli, err := client.NewEnvClient()
 		if err != nil {
 			fmt.Println("Unable to create docker client")
@@ -56,26 +52,15 @@ var checkCmd = &cobra.Command{
 		docker = cli
 		docker.NegotiateAPIVersion(context.Background())
 
-		defer ui.Close()
-
+		isDebug, _ = cmd.Flags().GetBool("debug")
 		file, _ := cmd.Flags().GetString("file")
 		pipeline = readDescriptor(file)
 
 		go processPipeline()
 
-		display()
-		uiEvents := ui.PollEvents()
-		ticker := time.NewTicker(time.Second).C
-		for {
-			select {
-			case e := <-uiEvents:
-				switch e.ID {
-				case "q", "<C-c>":
-					return
-				}
-			case <-ticker:
-				display()
-			}
+		for !over {
+			updateSummary()
+			time.Sleep(1 * time.Second)
 		}
 	},
 }
@@ -83,6 +68,7 @@ var checkCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(checkCmd)
 	checkCmd.Flags().StringP("file", "f", viper.GetString("G2P_STATE_FILE"), "File describing all states that will be checked")
+	checkCmd.Flags().BoolP("debug", "d", viper.GetBool("G2P_DEBUG"), "Enables the debug mode")
 	_ = cobra.MarkFlagRequired(checkCmd.Flags(), "file")
 }
 
@@ -110,7 +96,7 @@ func processState(state *g2p.State) {
 	id := "g2p_" + strings.ReplaceAll(uid.String(), "-", "")
 	state.Start()
 
-	state.Operation = " Deploying"
+	state.Operation = "Deploying"
 	cmd := exec.Command("docker-compose", "-f", state.ComposeFile, "-p", id, "up", "-d")
 	err := cmd.Run()
 	if err != nil {
@@ -118,9 +104,9 @@ func processState(state *g2p.State) {
 		panic(err)
 	}
 
-	state.Operation = " Running tests"
+	state.Operation = "Running tests"
 	network := findNetwork(err, id)
-	// Fixme : try to do better thant this
+	// Fixme : try to do better than this
 	time.Sleep(10 * time.Second)
 
 	for checkerIndex, _ := range state.Checks {
@@ -130,7 +116,7 @@ func processState(state *g2p.State) {
 		checker.Stop()
 	}
 
-	state.Operation = " Undeploying"
+	state.Operation = "Undeploying"
 	if stopState(state, id) != nil {
 		panic("Unable to stop compose")
 	}
@@ -158,6 +144,7 @@ func runChecker(checker *g2p.Checker, network types.NetworkResource, id string, 
 		_ = stopState(state, id)
 		panic(err)
 	}
+
 	statusCh, errCh := docker.ContainerWait(context.Background(), cont.ID, container.WaitConditionNextExit)
 	select {
 	case err := <-errCh:
@@ -168,6 +155,19 @@ func runChecker(checker *g2p.Checker, network types.NetworkResource, id string, 
 	case status := <-statusCh:
 		checker.ExitCode = status.StatusCode
 	}
+
+	if isDebug {
+		logs, _ := docker.ContainerLogs(context.Background(), cont.ID, types.ContainerLogsOptions{
+			ShowStderr: true,
+			ShowStdout: true,
+		})
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(logs)
+
+		logMessage(buf.String())
+		_ = logs.Close()
+	}
+
 	_ = docker.ContainerRemove(context.Background(), cont.ID, types.ContainerRemoveOptions{})
 }
 
@@ -189,49 +189,46 @@ func stopState(state *g2p.State, id string) error {
 	return err
 }
 
-func display() {
-	if stateTable == nil {
-		stateTable = widgets.NewTable()
+func logMessage(msg string) {
+	removeSummary()
+	fmt.Printf("\033[0m%v\r\n", msg)
+	displaySummary()
+}
+
+func removeSummary() {
+	count := 0
+	for _, state := range pipeline.States {
+		count += len(state.Checks) + 1
 	}
-	stateTable.Title = "Running checks for " + pipeline.Name
-	stateTable.Rows = [][]string{}
-	stateTable.RowSeparator = false
-	stateTable.PaddingLeft = 1
+	for count >= 0 {
+		fmt.Printf("\033[F\033[K")
+		count--
+	}
+}
+
+func displaySummary() {
+	fmt.Printf("=======================================================\r\n")
 	for index, _ := range pipeline.States {
-		tmp := [][]string{printState(&pipeline.States[index])}
+		renderData := printState(&pipeline.States[index])
+		fmt.Printf("%v %v \t[%v] \t(%v)\r\n", renderData[3], renderData[0], renderData[2], renderData[1])
+
 		for idx, _ := range pipeline.States[index].Checks {
-			tmp = append(tmp, printCheckers(&pipeline.States[index].Checks[idx]))
-		}
-		stateTable.Rows = append(stateTable.Rows, tmp...)
-	}
-
-	// Color
-	var index = 0
-	for _, stateElement := range pipeline.States {
-		stateTable.RowStyles[index] = ui.NewStyle(stateElement.Color(stateElement.IsValid()))
-		index++
-		for _, checkerElement := range stateElement.Checks {
-			stateTable.RowStyles[index] = ui.NewStyle(checkerElement.Color(checkerElement.IsValid()))
-			index++
+			renderData = printCheckers(&pipeline.States[index].Checks[idx])
+			fmt.Printf("%v   -- %v \t[%v] \t(%v)\r\n", renderData[3], renderData[0], renderData[2], renderData[1])
 		}
 	}
+}
 
-	if grid == nil {
-		grid = ui.NewGrid()
+func updateSummary() {
+	if !firstDisplay {
+		removeSummary()
 	}
-	termWidth, termHeight := ui.TerminalDimensions()
-	grid.SetRect(0, 0, termWidth, termHeight)
-	grid.Set(
-		ui.NewRow(1.0,
-			ui.NewCol(1.0, stateTable),
-		),
-	)
-
-	ui.Render(grid)
+	displaySummary()
+	firstDisplay = false
 }
 
 func printState(state *g2p.State) []string {
-	return []string{state.Name, state.ElapsedPrettyPrint(), state.Status(state.IsValid())}
+	return []string{state.Name, state.ElapsedPrettyPrint(), state.Status(state.IsValid()), state.Color(state.IsValid())}
 }
 
 func printCheckers(checker *g2p.Checker) []string {
@@ -239,5 +236,5 @@ func printCheckers(checker *g2p.Checker) []string {
 	if !checker.IsValid() {
 		statusPrecision = " (exit code = " + fmt.Sprintf("%v", checker.ExitCode) + ")"
 	}
-	return []string{"  |---" + checker.Name, checker.ElapsedPrettyPrint(), checker.Status(checker.IsValid()) + statusPrecision}
+	return []string{checker.Name, checker.ElapsedPrettyPrint(), checker.Status(checker.IsValid()) + statusPrecision, checker.Color(checker.IsValid())}
 }
