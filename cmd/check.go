@@ -27,6 +27,7 @@ import (
 	g2p "go-to-prod/internal"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -35,7 +36,6 @@ import (
 var pipeline g2p.Pipeline
 var docker *client.Client
 var isDebug = false
-var over = false
 var firstDisplay = true
 
 // checkCmd represents the check command
@@ -58,7 +58,7 @@ var checkCmd = &cobra.Command{
 
 		go processPipeline()
 
-		for !over {
+		for true {
 			updateSummary()
 			time.Sleep(1 * time.Second)
 		}
@@ -89,6 +89,12 @@ func processPipeline() {
 	for index, _ := range pipeline.States {
 		processState(&pipeline.States[index])
 	}
+	for _, state := range pipeline.States {
+		if !state.IsValid() {
+			os.Exit(1)
+		}
+	}
+	os.Exit(0)
 }
 
 func processState(state *g2p.State) {
